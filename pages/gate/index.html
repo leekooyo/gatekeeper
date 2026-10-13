@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>总控闸门 · gatekeeper</title>
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="title">
+        <span class="dot" id="enable-dot"></span>
+        <h1>总控闸门</h1>
+        <span class="sub" id="status-line">加载中…</span>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btn-refresh">刷新</button>
+        <button class="btn" id="btn-off">停用总控</button>
+        <button class="btn primary" id="btn-on">启用总控</button>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>已加入群与群模式</h2>
+        <span class="hint">纯运行时水闸，不写入任何持久配置。未登记群按默认 plugin（LLM 关、插件开）。群号位写 all / * 实时查询并对当前加入的全部群生效。</span>
+      </div>
+
+      <form class="addbar" id="add-form">
+        <input id="add-gid" placeholder="群号，或 all / * 全选" autocomplete="off">
+        <select id="add-mode">
+          <option value="both">both · LLM + 插件</option>
+          <option value="plugin">plugin · 仅插件</option>
+          <option value="llm">llm · 仅 LLM</option>
+          <option value="mute">mute · 全禁</option>
+        </select>
+        <button class="btn primary" type="submit">应用</button>
+      </form>
+
+      <div id="groups" class="groups">—</div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>最近事件</h2>
+        <span class="hint">内存环形记录，最多 200 条；重载插件后清空。</span>
+      </div>
+      <div id="logs" class="logs">—</div>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="./script.js"></script>
+</body>
+</html>

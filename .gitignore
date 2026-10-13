@@ -1,0 +1,13 @@
+
+# Local runtime files
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+.env
+.env.*
+*.log
+*.db
+*.sqlite*
+data/

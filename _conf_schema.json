@@ -1,0 +1,31 @@
+{
+  "probability": {
+    "description": "llm / both 模式下 @bot 被放行的概率（%）；已并入原 llm_gate 闸门",
+    "type": "float",
+    "default": 30.0,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "仅作用于 llm/both 群的 @bot 消息；0 = 不回复，100 = 必回。"
+  },
+  "allow_upstream_wake": {
+    "description": "放行「上游已唤醒但未 @bot」的消息",
+    "type": "bool",
+    "default": false,
+    "hint": "默认 false = 严格只认 @bot；置 true 则把判定交回 wakepro 等上游唤醒结果。"
+  },
+  "notify_ban": {
+    "description": "bot 被禁言 / 解除禁言时私聊通知管理员",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后仍会自动 mute / 自动恢复，只是不再给 admins_id 里的管理员发私聊通知。"
+  },
+  "ban_sweep_interval": {
+    "description": "禁言状态轮询间隔（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "本机 ignore_bot_self_message=true，bot 自己被禁言的 notice 到不了插件，故个人禁言只能靠轮询发现。0 = 关闭轮询（仅保留启动 / gate on 时的一次性对账）。"
+  }
+}

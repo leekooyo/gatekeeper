@@ -1,0 +1,19 @@
+name: gatekeeper
+display_name: 总控闸门
+short_desc: 按群控制机器人发言与插件使用权限（4 模式 · 纯运行时水闸 · 被禁言自动静默）
+desc: >-
+  每群 4 模式的总控闸门：mute 全禁 / llm 只聊天 / plugin 只插件 / both 全开。
+  原 astrbot_plugin_llm_gate 的「群聊 @bot 概率闸门」已并入本插件（见 probability 配置项）。
+  纯运行时水闸：不写入任何持久配置，仅在每条消息处理时决定插件去留与 LLM 放行。
+  不在策略里的群按默认 plugin（LLM 关、插件开）；私聊一律放行并作为主人管理入口。
+
+  被禁言自动 mute：bot 在某个群被禁言（个人禁言或全体禁言）时，自动把该群切到 mute，
+  到期后 1 分钟或手动解除时恢复原模式，并私聊通知管理员。由于本机
+  ignore_bot_self_message=true，个人禁言的 notice 到不了插件，故采用「轮询拉取真实状态」
+  为主、事件为加速器的设计，绝不依赖事件里的 sub_type / duration。
+
+  提供聊天指令与 WebUI 管理页。全部基于官方机制，无需修改核心。
+version: 0.3.0
+author: "81510"
+astrbot_version: "==4.28.2"
+repo: https://github.com/leekooyo/gatekeeper
