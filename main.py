@@ -389,13 +389,14 @@ class GatekeeperPlugin(Star):
 
     def _remove_group(self, gid: str) -> bool:
         policy = self._read_policy()
-        if gid not in policy["groups"]:
-            return False
+        had_group = gid in policy["groups"]
         policy["groups"].pop(gid, None)
         bans = policy["meta"].get("bans") or {}
         had_ban = gid in bans
         if had_ban:
             bans.pop(gid, None)
+        if not had_group and not had_ban:
+            return False
         self._write_policy(policy)
         self._cancel_ban_timer(gid)
         return True
@@ -465,12 +466,20 @@ class GatekeeperPlugin(Star):
             joined = set(inv["groups"])
             policy = self._read_policy()
             removed = sorted(g for g in list(policy["groups"]) if g not in joined)
+            bans = policy["meta"].get("bans") or {}
+            stale_bans = sorted(g for g in list(bans) if g not in joined)
             if removed:
                 for g in removed:
                     policy["groups"].pop(g, None)
+            if stale_bans:
+                for g in stale_bans:
+                    bans.pop(g, None)
+                    self._cancel_ban_timer(g)
+            if removed or stale_bans:
                 self._write_policy(policy)
             self._refresh_pending = False
-            return {"complete": True, "error": None, "removed": removed, "joined": inv["groups"]}
+            return {"complete": True, "error": None,
+                    "removed": sorted(set(removed + stale_bans)), "joined": inv["groups"]}
 
     # ===================== 被禁言自动 mute =====================
     def _notify_ban(self) -> bool:
@@ -824,13 +833,25 @@ class GatekeeperPlugin(Star):
             return
         pid = self._platform_id_of()
         admins = self._admin_ids()
-        if not pid or not admins:
-            logger.warning("[gatekeeper] 无法通知禁言事件：platform_id=%r admins=%d", pid, len(admins))
+        if not pid:
+            logger.warning("[gatekeeper] 无法通知禁言事件：platform_id 为空")
             return
         if kind == "ban":
             text = self._ban_text(gid, state or {}, operator, restore)
         else:
             text = self._lift_text(gid, reason, restore)
+        target = str(self.config.get("notify_target", "admin_private"))
+        review_group = str(self.config.get("review_group_id", "")).strip()
+        if target == "review_group" and review_group.isdigit():
+            try:
+                await self.context.send_message(
+                    f"{pid}:GroupMessage:{review_group}", MessageChain([Plain(text)]))
+            except Exception as exc:
+                logger.warning("[gatekeeper] 通知审核群 %s 失败：%s", review_group, exc)
+            return
+        if not admins:
+            logger.warning("[gatekeeper] 无法通知禁言事件：未配置机器人管理员")
+            return
         for aid in admins:
             try:
                 await self.context.send_message(
@@ -842,7 +863,9 @@ class GatekeeperPlugin(Star):
         """人为显式设模式 → 清掉临时禁言并补一条出狱通知。"""
         async def run():
             for gid in gids:
-                await self._clear_ban(gid, reason="manual")
+                restore = self._mode_and_off(self._read_policy(), gid)[0]
+                self._audit(gid, restore, "ban-clear-manual")
+                await self._notify_ban_event(gid, "lift", reason="manual", restore=restore)
 
         try:
             asyncio.get_running_loop().create_task(run())
@@ -1309,7 +1332,7 @@ class GatekeeperPlugin(Star):
             "/gate list — 刷新对账并显示当前加入的群与模式\n"
             "以下仅机器人管理员可用：\n"
             "/gate on — 启用总控（开始按策略接管）\n"
-            "/gate off — 停用总控（当死人：不拦截、不对账、不落盘）\n"
+            "/gate off — 停用总控（停止拦截与自动对账；手动指令仍可操作）\n"
             "/gate mode <群号|all|*> <mute|llm|plugin|both> — 设置群模式\n"
             "  模式：mute 全禁 / llm 只聊天 / plugin 只插件 / both 全开\n"
             "/gate plugin <群号|all|*> <插件名|all|*> <on|off> — 设置插件开关\n"
@@ -1317,7 +1340,8 @@ class GatekeeperPlugin(Star):
             "批量目标可用 all、*、全部；插件名位写 all/* 表示全部插件。\n"
             "未设置策略的群按默认 plugin（LLM 关、插件开）。\n"
             "群内插件开关仅本群管理员或机器人管理员可操作。\n"
-            "bot 被禁言时自动把该群切到 mute，到期后 1 分钟或手动解除时恢复并私聊通知管理员。"
+            "bot 被禁言时临时静默该群；解除或到期后约 1 分钟恢复原模式。\n"
+            "禁言/解禁通知发往配置的管理员私聊或审核群；检测依赖轮询间隔。"
         )
 
     def _list_text(self, joined: dict | None = None) -> str:

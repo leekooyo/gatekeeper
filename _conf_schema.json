@@ -17,15 +17,28 @@
     "hint": "默认 false = 严格只认 @bot；置 true 则把判定交回 wakepro 等上游唤醒结果。"
   },
   "notify_ban": {
-    "description": "bot 被禁言 / 解除禁言时私聊通知管理员",
+    "description": "bot 被禁言 / 解除禁言时通知管理员渠道",
     "type": "bool",
     "default": true,
-    "hint": "关闭后仍会自动 mute / 自动恢复，只是不再给 admins_id 里的管理员发私聊通知。"
+    "hint": "关闭后仍会自动静默和恢复，只是不再向配置的管理员渠道发送通知。"
+  },
+  "notify_target": {
+    "description": "禁言与解禁通知渠道",
+    "type": "string",
+    "options": ["admin_private", "review_group"],
+    "default": "admin_private",
+    "hint": "admin_private：逐人私聊机器人管理员；review_group：发到审核群。审核群号未配置时回退管理员私聊。"
+  },
+  "review_group_id": {
+    "description": "禁言通知审核群号",
+    "type": "string",
+    "default": "",
+    "hint": "仅在 notify_target=review_group 时使用，填写纯数字 QQ 群号。"
   },
   "ban_sweep_interval": {
     "description": "禁言状态轮询间隔（秒）",
     "type": "int",
     "default": 60,
-    "hint": "本机 ignore_bot_self_message=true，bot 自己被禁言的 notice 到不了插件，故个人禁言只能靠轮询发现。0 = 关闭轮询（仅保留启动 / gate on 时的一次性对账）。"
+    "hint": "轮询是禁言检测的可靠来源；群 notice 只加快检测。0 = 关闭轮询（仅保留启动 / gate on 的一次对账，此后可能漏掉状态变化）。"
   }
 }
