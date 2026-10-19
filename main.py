@@ -149,6 +149,31 @@ def _sanitize_bans(raw) -> dict[str, dict]:
     return bans
 
 
+def _ban_view(ban, now: float) -> dict:
+    """纯计算：把禁言记录换算成 stage 视图，**绝不触发清理或定时器**。
+
+    until 已含 BAN_GRACE 宽限 ⇒ 预计禁言结束 = until - BAN_GRACE，策略释放 = until。
+    until == 0 表示无固定截止时间（全体禁言常见），归入 known_ban。
+    """
+    empty = {"kind": "", "phase": "", "expected_ban_end_at": None, "release_at": None}
+    if not isinstance(ban, dict):
+        return empty
+    until = _to_int(ban.get("until"))
+    kind = "whole" if bool(ban.get("whole")) else "personal"
+    if until <= 0:
+        return {"kind": kind, "phase": "known_ban",
+                "expected_ban_end_at": None, "release_at": None}
+    expected = until - BAN_GRACE
+    if now < expected:
+        phase = "known_ban"
+    elif now < until:
+        phase = "recovery_wait"
+    else:
+        return empty  # 已过策略释放时间：不再计入任何阶段，清理由原机制处理
+    return {"kind": kind, "phase": phase,
+            "expected_ban_end_at": expected, "release_at": until}
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -175,6 +200,11 @@ class GatekeeperPlugin(Star):
         self._ban_sweep_runs = 0                              # 已跑轮数（仅用于首轮日志）
         self._group_names: dict[str, str] = {}  # gid → 群名（通知文案用）
         self._self_id = ""
+
+        # 只读状态快照（供 status 插件）：全部由既有采集路径顺手记录，零额外请求
+        self._inventory_cache: dict | None = None  # {groups, observed_at, self_id}
+        self._ban_seen: dict[str, dict] = {}       # gid → {observed_at, banned, whole}
+        self._last_scan: dict | None = None         # {finished_at, target, ok, failed, complete}
 
         self._register_web_apis()
         if self._on():
@@ -451,6 +481,13 @@ class GatekeeperPlugin(Star):
         for result in results:
             if result is not None:
                 groups.update(result)
+        if complete and groups:
+            # 顺手留存最近一次「完整」群列表，供 status 复用；不产生额外请求
+            self._inventory_cache = {
+                "groups": dict(groups),
+                "observed_at": time.time(),
+                "self_id": self._load_self_id(),
+            }
         return {"groups": groups, "complete": complete,
                 "error": None if complete else "QQ 群列表读取失败或平台未连接；实测群数暂不可确认。"}
 
@@ -567,7 +604,8 @@ class GatekeeperPlugin(Star):
                 if not isinstance(info, dict):
                     continue
                 if _to_int(info.get("group_all_shut")) == -1:
-                    return {"banned": True, "whole": True, "until": 0, "duration": -1}
+                    return self._remember_ban_observation(
+                        gid, {"banned": True, "whole": True, "until": 0, "duration": -1})
                 member = await asyncio.wait_for(
                     client.get_group_member_info(group_id=int(gid), user_id=int(self_id),
                                                  no_cache=True),
@@ -575,12 +613,23 @@ class GatekeeperPlugin(Star):
                 ts = _to_int((member or {}).get("shut_up_timestamp"))
                 now = time.time()
                 if ts > now:
-                    return {"banned": True, "whole": False, "until": int(ts),
-                            "duration": max(0, int(ts) - int(now))}
-                return {"banned": False, "whole": False, "until": 0, "duration": 0}
+                    return self._remember_ban_observation(
+                        gid, {"banned": True, "whole": False, "until": int(ts),
+                              "duration": max(0, int(ts) - int(now))})
+                return self._remember_ban_observation(
+                    gid, {"banned": False, "whole": False, "until": 0, "duration": 0})
             except Exception as exc:
                 logger.warning("[gatekeeper] 拉取群 %s 禁言状态失败(platform=%s)：%s", gid, pid, exc)
         return None
+
+    def _remember_ban_observation(self, gid: str, state: dict) -> dict:
+        """记录一次成功的禁言观测（时间 + 结果），供只读快照展示覆盖情况。"""
+        self._ban_seen[str(gid)] = {
+            "observed_at": time.time(),
+            "banned": bool(state.get("banned")),
+            "whole": bool(state.get("whole")),
+        }
+        return state
 
     # ---- 登记 / 清除 ----
     async def _register_ban(self, gid: str, state: dict, operator: str = "") -> None:
@@ -756,19 +805,31 @@ class GatekeeperPlugin(Star):
                 return {"skipped": True, "error": inv["error"]}
             gids = sorted(inv["groups"])
             sem = asyncio.Semaphore(BAN_RECONCILE_CONCURRENCY)
+            ok = 0
+            failed = 0
 
             async def one(gid: str):
+                nonlocal ok, failed
                 async with sem:
                     state = await self._pull_ban_state(gid)
                     if state is None:
+                        failed += 1
                         return
+                    ok += 1
                     if state["banned"]:
                         await self._register_ban(gid, state)
                     else:
                         await self._clear_ban(gid, reason="lift")
 
             await asyncio.gather(*(one(g) for g in gids), return_exceptions=True)
-            return {"checked": len(gids)}
+            self._last_scan = {
+                "finished_at": time.time(),
+                "target": len(gids),
+                "ok": ok,
+                "failed": failed,
+                "complete": failed == 0,
+            }
+            return {"checked": len(gids), "ok": ok, "failed": failed}
         except Exception as exc:
             logger.warning("[gatekeeper] 禁言全量对账异常：%s", exc)
             return {"error": str(exc)}
@@ -1198,7 +1259,7 @@ class GatekeeperPlugin(Star):
                 head = (
                     f"总控{'已启用' if policy['meta'].get('on', True) else '已停用'}"
                     f"｜实际加入 {len(joined)} 群｜已登记 {len(configured)} 群\n"
-                    + (f"本次对账剔除退群条目 {len(r['removed'])} 个：{'、'.join(r['removed'])}\n"
+                    + (f"已清理不再加入的群 {len(r['removed'])} 个：{'、'.join(r['removed'])}\n"
                        if r["removed"] else "")
                 )
                 body = self._list_text(joined=joined)
@@ -1221,12 +1282,12 @@ class GatekeeperPlugin(Star):
             r = await self._refresh()
             n = len(r.get("removed") or [])
             rr = await self._reconcile_bans()
-            tail = f"启动对账剔除退群条目 {n} 个。" if n else ""
+            tail = f"已清理不再加入的群 {n} 个。" if n else ""
             if rr.get("skipped"):
                 self._ban_reconcile_pending = True
-                tail += "禁言对账已排入后台（待平台就绪）。"
+                tail += "平台连接后将自动检查机器人禁言状态。"
             else:
-                tail += f"禁言对账核查 {rr.get('checked')} 个群。"
+                tail += f"已检查 {rr.get('checked')} 个群的机器人禁言状态。"
             yield event.plain_result("总控已启用，开始按策略接管。" + tail)
             return
 
@@ -1241,7 +1302,7 @@ class GatekeeperPlugin(Star):
             self._stop_ban_sweep()
             for gid in list(self._ban_timers):
                 self._cancel_ban_timer(gid)
-            yield event.plain_result("总控已停用（当死人：不拦截、不对账、不落盘）。")
+            yield event.plain_result("总控已停用；不再拦截消息或自动同步群状态，现有策略已保留。")
             return
 
         if sub == "mode":
@@ -1262,13 +1323,13 @@ class GatekeeperPlugin(Star):
                     yield event.plain_result("QQ 当前没有已加入群，未执行批量修改。")
                     return
                 self._set_modes(gids, mode)
-                yield event.plain_result(f"已对当前加入的 {len(gids)} 个群写入 {mode} 策略（无状态，立即生效）。")
+                yield event.plain_result(f"已把当前加入的 {len(gids)} 个群设为 {mode} 模式，立即生效。")
                 return
             if not target.isdigit():
                 yield event.plain_result("群号须为数字，或使用 all / * 表示全部群。")
                 return
             self._set_mode(target, mode)
-            yield event.plain_result(f"已设置 {target} -> {mode}（无状态，立即生效）。")
+            yield event.plain_result(f"群 {target} 已设为 {mode} 模式，立即生效。")
             return
 
         if sub == "plugin":
@@ -1302,7 +1363,7 @@ class GatekeeperPlugin(Star):
                     return
                 n = self._set_plugins(gids, names, enable)
                 yield event.plain_result(
-                    f"已在 {n} 个群{'启用' if enable else '禁用'} {label}（无状态，立即生效）。"
+                    f"已在 {n} 个群{'启用' if enable else '禁用'} {label}，立即生效。"
                 )
                 return
             if not gid.isdigit():
@@ -1319,7 +1380,7 @@ class GatekeeperPlugin(Star):
                     return
             n = self._set_plugins([gid], names, enable)
             if n:
-                yield event.plain_result(f"已为群 {gid} {'启用' if enable else '禁用'} {label}（无状态，立即生效）。")
+                yield event.plain_result(f"群 {gid} 已{'启用' if enable else '禁用'} {label}，立即生效。")
             else:
                 yield event.plain_result("未执行（插件名为空或包含 gatekeeper）。")
             return
@@ -1328,13 +1389,14 @@ class GatekeeperPlugin(Star):
 
     def _help_text(self) -> str:
         return (
-            "总控闸门帮助\n"
-            "/gate list — 刷新对账并显示当前加入的群与模式\n"
-            "以下仅机器人管理员可用：\n"
+            "群功能总控帮助\n"
+            "/gate list — 同步并查看当前群模式\n"
+            "以下总控和模式设置仅机器人管理员可用：\n"
             "/gate on — 启用总控（开始按策略接管）\n"
             "/gate off — 停用总控（停止拦截与自动对账；手动指令仍可操作）\n"
             "/gate mode <群号|all|*> <mute|llm|plugin|both> — 设置群模式\n"
             "  模式：mute 全禁 / llm 只聊天 / plugin 只插件 / both 全开\n"
+            "群内的本群管理员也可操作本群插件开关：\n"
             "/gate plugin <群号|all|*> <插件名|all|*> <on|off> — 设置插件开关\n"
             "  例：/gate plugin 123456 all off（该群一键全禁插件）\n"
             "批量目标可用 all、*、全部；插件名位写 all/* 表示全部插件。\n"
@@ -1378,6 +1440,88 @@ class GatekeeperPlugin(Star):
                 kind = "全体禁言" if ban.get("whole") else "个人禁言"
                 lines.append(f"群 {gid}｜{kind}｜{tail}")
         return "\n".join(lines)
+
+    # ===================== 只读状态快照（供 status 插件） =====================
+    def get_status_snapshot(self) -> dict:
+        """公开只读快照：把本插件的策略与观测元数据解释成稳定语义。
+
+        ⚠️ 契约：不调用平台接口、不对账、不清理、不通知、不调度定时器、不写盘。
+        `_active_ban()` 带惰性清理副作用，故此处只用纯计算 `_ban_view()`。
+        返回值全为新建对象，调用方无法反向修改内部策略。
+
+        effective_mode 取 "off" 表示总控停用、本插件不接管。
+        """
+        now = time.time()
+        policy = self._read_policy()
+        enabled = bool(policy["meta"].get("on", True))
+        configured = policy["groups"]
+        bans = policy["meta"].get("bans") or {}
+        self_id = self._load_self_id()
+
+        inv = self._inventory_cache
+        inventory = None
+        if isinstance(inv, dict) and isinstance(inv.get("groups"), dict) and inv["groups"]:
+            inventory = {
+                "groups": dict(inv["groups"]),
+                "observed_at": inv.get("observed_at"),
+                "self_id": self_id or inv.get("self_id") or "",
+            }
+
+        gids = set(configured) | set(bans)
+        if inventory:
+            gids |= set(inventory["groups"])
+        ordered = sorted(
+            (str(g) for g in gids if str(g).strip() and not _is_all_token(g)),
+            key=lambda g: (0, int(g)) if g.isdigit() else (1, 0),
+        )
+
+        groups: list[dict] = []
+        for gid in ordered:
+            mode, manual_off = self._mode_and_off(policy, gid)
+            view = _ban_view(bans.get(gid), now)
+            if not enabled:
+                effective = "off"
+            elif view["phase"]:
+                effective = "mute"   # 临时禁言优先于一切显式模式
+            else:
+                effective = mode
+            seen = self._ban_seen.get(gid)
+            name = ""
+            if inventory:
+                name = inventory["groups"].get(gid, "")
+            groups.append({
+                "group_id": gid,
+                "name": name or self._group_names.get(gid, ""),
+                "configured_mode": mode,
+                "effective_mode": effective,
+                "manual_off_plugins": list(manual_off),
+                "restriction_kind": view["kind"],
+                "restriction_phase": view["phase"],
+                "expected_ban_end_at": view["expected_ban_end_at"],
+                "release_at": view["release_at"],
+                "last_observed_at": seen["observed_at"] if seen else None,
+                "observation": ("banned" if seen["banned"] else "clear") if seen else "unknown",
+            })
+
+        last_scan = None
+        if isinstance(self._last_scan, dict):
+            last_scan = dict(self._last_scan)
+
+        return {
+            "captured_at": now,
+            "enabled": enabled,
+            "default_mode": DEFAULT_MODE,
+            "policy_options": {
+                "allow_upstream_wake": self._allow_upstream_wake(),
+                "probability": self._probability(),
+                "ban_sweep_interval": self._ban_sweep_interval(),
+                "ban_grace": BAN_GRACE,
+                "modes": list(MODES),
+            },
+            "inventory": inventory,
+            "last_scan": last_scan,
+            "groups": groups,
+        }
 
     # ===================== Web API =====================
     def _register_web_apis(self) -> None:

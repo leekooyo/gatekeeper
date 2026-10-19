@@ -13,7 +13,11 @@ desc: >-
   不依赖事件里的 sub_type / duration。核心保留普通自发消息过滤，但允许自身 notice 派发。
 
   提供聊天指令与 WebUI 管理页；自身 notice 派发依赖本机的核心事件过滤修正。
-version: 0.3.1
+
+  0.4.0：新增只读状态快照 get_status_snapshot()，把既有策略与观测元数据解释成
+  群模式 / 限制阶段 / 观测时间，供 status 插件读取；不新增任何平台请求，
+  不带清理、通知或写盘副作用。
+version: 0.4.0
 author: "leekooyo"
 astrbot_version: "==4.28.2"
 repo: https://github.com/leekooyo/gatekeeper
