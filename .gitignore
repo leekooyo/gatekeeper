@@ -11,3 +11,37 @@ __pycache__/
 *.db
 *.sqlite*
 data/
+
+# Local verification files
+/tests/
+
+# Local data, credentials, and generated files
+.coverage
+htmlcov/
+/.venv/
+/venv/
+/node_modules/
+/dist/
+/build/
+/.vscode/
+/.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.pem
+*.key
+*.p12
+*.pfx
+*.bak
+*.tmp
+*.swp
+*~
+/data/
+/cache/
+/logs/
+/tmp/
+/temp/
+/backups/
+/local/
+/config.json
+/test/
