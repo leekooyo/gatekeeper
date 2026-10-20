@@ -2,7 +2,7 @@
 
 ## 安装与兼容
 
-在 AstrBot 中选择「通过仓库地址安装」，填写 `https://github.com/leekooyo/gatekeeper`。本插件已在 AstrBot 4.28.2 环境使用，主要处理 QQ 群消息；其他版本需实际验证。管理员控制与禁言状态检测依赖已配置的 aiocqhttp 平台。当前环境允许机器人自身的群 notice 派发，其他环境若过滤了这类事件，轮询仍承担禁言检测，但实际进退群通知可能受限。
+在 AstrBot 中选择「通过仓库地址安装」，填写 `https://github.com/leekooyo/gatekeeper`。**当前版本：0.4.0。** `metadata.yaml` 将 AstrBot 版本限定为 **4.28.2**；其他框架版本需要先修改并验证这一约束。插件主要处理 QQ 群消息，管理员控制与禁言状态检测依赖已配置的 aiocqhttp 平台。当前环境允许机器人自身的群 notice 派发；若其他环境过滤此类事件，轮询仍可检测禁言，但进退群通知可能受限。
 
 仓库只保存代码和默认配置结构。群策略保存在本机插件数据目录的 `gatekeeper/modes.json`，通知目标在 AstrBot 插件配置中；群号和实际配置不要提交到 GitHub。插件还提供 WebUI 管理页，可查看和调整各群模式。
 
